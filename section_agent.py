@@ -1,3 +1,4 @@
+from copy import deepcopy
 from agents import Runner, Agent, trace, gen_trace_id
 from dotenv import load_dotenv
 from prompts.agent_prompts import *
@@ -69,6 +70,16 @@ class SectionResearchManager:
             # researcher_result = ensure_keys(researcher_result, {"facts": [], "domains_seen": [], "gap_flags": []})
 
             researcher_result = json.loads(researcher_raw.final_output)
+            facts_to_url_mapping = {}
+            if 'facts' in researcher_result and len(researcher_result['facts'])>0:
+                for fact in researcher_result['facts']:
+                    fact_id = fact["fact_id"]
+                    source_url = fact["source_url"]
+
+                    if fact_id not in facts_to_url_mapping:
+                        facts_to_url_mapping[fact_id] = []
+                    facts_to_url_mapping[fact_id].append(source_url)
+
 
             # ---------- Analyst ----------
             analyst_payload = {
@@ -153,6 +164,14 @@ class SectionResearchManager:
             # })
 
             editor_section = json.loads(editor_raw.final_output)
+            if 'facts_ref' in editor_section and len(editor_section['facts_ref'])>0:
+                updated_facts_ref = {}
+                for fact_referred_id in editor_section['facts_ref']:
+                    if fact_referred_id in facts_to_url_mapping:
+                        updated_facts_ref[fact_referred_id] = facts_to_url_mapping[fact_referred_id]
+
+                editor_section['facts_ref'] = deepcopy(updated_facts_ref)
+
 
             # Merge critic gap queries into gaps_next (strings only)
             # if critic_result and critic_result.get("gap_queries"):
@@ -167,6 +186,7 @@ class SectionResearchManager:
                     "queries": query_gen_result,
                     "facts": researcher_result,
                     "analysis": analyst_result,
-                    "critic": critic_result
+                    "critic": critic_result,
+                    "facts_to_url_mapping": facts_to_url_mapping
                 }
             }
