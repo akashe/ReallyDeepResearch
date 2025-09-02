@@ -7,7 +7,9 @@ import gradio as gr
 import pdb
 
 from agents import gen_trace_id
-from section_agent import SectionResearchManager  # your class from earlier
+from section_agent import SectionResearchManager 
+from summarize_agent import final_report_agent
+from agents import Runner
 
 load_dotenv(override=True)
 
@@ -180,7 +182,40 @@ async def run_framework_parallel_stream(framework: str, topic: str):
     }
 
     pretty = json.dumps(merged, indent=2, ensure_ascii=False)
-    yield ("🧩 All sections complete. Merged summary JSON is ready (below).", pretty)
+    # yield ("🧩 All sections complete. Merged summary JSON is ready (below).", pretty)
+
+    # Generating final summary
+
+    section_analyses = [
+        res["artifacts"]["analysis"] for res in section_results.values()
+    ]
+    facts_to_url_mapping = {
+        s: res["artifacts"].get("facts_to_url_mapping", {})
+        for s,res in section_results.items()
+    }
+
+    payload = {
+        "framework": framework,
+        "topic_or_idea": topic,
+        "section_analyses": section_analyses,
+        "facts_to_url_mapping": facts_to_url_mapping
+    }
+
+    final_report = await Runner.run(final_report_agent, [
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    ])
+
+    combined = f"""## 🧩 Structured Summary (JSON)
+    ```json
+    {pretty}
+
+    📄 Narrative Report
+
+    {final_report}
+    """
+
+    yield ("📄 Report", combined)
+
 
 # ------------- Gradio UI -------------
 
@@ -203,7 +238,7 @@ with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
         btn_specific = gr.Button("Run Specific-Idea Exploration")
 
     chat = gr.Chatbot(label="Run Log", height=520, elem_id="chat")
-    out_json = gr.Code(label="Merged Summary (JSON)", language="json")
+    out_json = gr.Markdown(label="Merged Summary ")
 
     # state keeps the conversation messages
     state_msgs = gr.State([])  # List[Tuple[str,str]]

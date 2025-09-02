@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from prompts.agent_prompts import *
 from utils import *
 from tools.serper_tool import serper_search
+from tools.playwright_tool import playwright_web_read
 import os
 import pdb
 
@@ -29,6 +30,7 @@ class SectionResearchManager:
         self.analyst_agent = Agent(
             name=f"Analyst agent: {section_name}",
             instructions=analyst_agent_system_prompt,
+            tools=[playwright_web_read],
             model=default_model_name
         )
         self.critic_agent = Agent(

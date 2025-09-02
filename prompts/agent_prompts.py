@@ -104,6 +104,9 @@ Rules:
 - No new claims. Every statement must reference ≥1 fact_id; strong claims (comparisons, trends, market-wide statements) must reference ≥2 fact_ids from DISTINCT domains.
 - Acknowledge contradictions via conflict_group_id.
 - Keep outputs terse, decision-ready.
+- You may call the tool `playwright_web_read(url)` to read the page text for any `source_url` referenced by the supplied facts.
+- Use it only to (a) confirm details, (b) choose a better ≤25-word quote, or (c) detect contradictions; do not add new claims not supported by existing fact_ids. If a contradiction is found, record it in `conflicts`. Your final output MUST follow the JSON schema exactly; do not include raw page text.
+
 
 If framework == "big-idea":
   1) Create 3–6 bullets of section-specific insights; cite evidence_ids.
@@ -264,4 +267,27 @@ Output JSON schema (specific-idea):
   "all_facts_ref":["s1","s2","..."],
   "overall_confidence": 0.0
 }
+"""
+
+
+final_summarizer_prompt = """
+You are a research synthesis writer.
+
+Inputs you receive:
+- framework: {{framework}}
+- topic_or_idea: {{topic_or_idea}}
+- section_analyses: a list of JSON objects, one per section, exactly as produced by the Analyst agents
+- facts_to_url_mapping: mapping from fact_ids to their source URLs
+
+Rules:
+- Your goal is to write ONE continuous narrative report (plain text, 4–8 paragraphs).
+- Start with a crisp overview of the topic/idea (funding, players, momentum).
+- Then dedicate a paragraph per section, summarizing the key bullets and mini_takeaways in flowing prose.
+- Explicitly weave in gaps and conflicts where they matter (“Analysts noted uncertainty about licensing…”).
+- Keep the style like a consulting memo: concise but readable, decision-ready.
+- Where useful, you MAY call the tool `playwright_web_read(url)` to skim source pages (use only 2–3 key URLs across sections, not all).
+- DO NOT output JSON. Only narrative text.
+
+Output:
+- A single coherent text report.
 """
