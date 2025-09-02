@@ -181,7 +181,7 @@ async def run_framework_parallel_stream(framework: str, topic: str):
         }
     }
 
-    pretty = json.dumps(merged, indent=2, ensure_ascii=False)
+    pretty = json.dumps(merged, indent=4, ensure_ascii=False)
     # yield ("🧩 All sections complete. Merged summary JSON is ready (below).", pretty)
 
     # Generating final summary
@@ -211,7 +211,7 @@ async def run_framework_parallel_stream(framework: str, topic: str):
 
     📄 Narrative Report
 
-    {final_report}
+    {final_report.final_output}
     """
 
     yield ("📄 Report", combined)
