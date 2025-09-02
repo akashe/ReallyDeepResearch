@@ -1,8 +1,10 @@
 # tools/serper_tool.py
 import os, requests, html
+from this import d
 from typing import Literal, Optional, Dict, Any, List, TypedDict
 from agents import function_tool   # from OpenAI Agents SDK (python)
 from dotenv import load_dotenv
+from copy import deepcopy
 
 load_dotenv(override=True)
 
@@ -16,6 +18,22 @@ class SerperItem(TypedDict, total=False):
     source: str
     date: str
     position: int
+
+def _has_quotes(s: str) -> bool:
+    return '"' in s
+
+def _dequote(s: str) -> str:
+    return s.replace('"','')
+
+def _log_empty_debug(query: str, data: Dict[str, Any]) -> None:
+    try:
+        keys = list(data.keys())
+        extras = {k: (len(data.get(k) or []) if isinstance(data.get(k), list)
+                      else ("obj" if isinstance(data.get(k), dict) else bool(data.get(k))))
+                  for k in ("organic","news","topStories","answerBox","knowledgeGraph","peopleAlsoAsk")}
+        print(f"[serper empty] q={query!r} keys={keys} extras={extras}")
+    except Exception:
+        pass
 
 def _http_post(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if not SERPER_API_KEY:
@@ -94,4 +112,22 @@ def serper_search(
         if "snippet" in it and it["snippet"]:
             it["snippet"] = html.unescape(it["snippet"])
 
-    return {"kind": kind, "query": q, "items": items, "raw": {"meta": {k: data.get(k) for k in ("knowledgeGraph","answerBox")}}}
+    if not items and _has_quotes(q):
+        print(f'Got no results with the serper query {q}, trying a relaxed query.')
+        q_relaxed = _dequote(q)
+        payload_new = deepcopy(payload)
+        payload_new["q"] = q_relaxed
+        data2 = _http_post(endpoint, payload_new)
+        items2 = _normalize_news(data2) if kind == "news" else _normalize_search(data2)
+        if items2:
+            for it in items2:
+                if "snippet" in it and it["snippet"]:
+                    it["snippet"] = html.unescape(it["snippet"])
+            return {
+                "kind": kind,
+                "query": q_relaxed,
+                "items": items2,
+                "raw": {"meta": {k: data2.get(k) for k in ("knowledgeGraph","answerBox","topStories","peopleAlsoAsk")}}
+            }
+
+    return {"kind": kind, "query": q, "items": items, "raw": {"meta": {k: data.get(k) for k in ("knowledgeGraph","answerBox","topStories","peopleAlsoAsk")}}}
