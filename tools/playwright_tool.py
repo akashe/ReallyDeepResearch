@@ -1,6 +1,6 @@
 # playwright_tool.py
 from typing import Dict, Optional
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 import re
 import html
 import time
@@ -21,7 +21,7 @@ def _collapse_ws(s: str) -> str:
     return s.strip()
 
 @function_tool
-def playwright_web_read(
+async def playwright_web_read(
     url: str,
     wait_selector: Optional[str] = None,
     render_js: bool = True,
@@ -47,8 +47,8 @@ def playwright_web_read(
     status = 0
     text = ""
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         try:
             context_kwargs = {}
             if user_agent:
@@ -56,34 +56,34 @@ def playwright_web_read(
             if not render_js:
                 context_kwargs["java_script_enabled"] = False
 
-            context = browser.new_context(**context_kwargs)
-            page = context.new_page()
+            context = await browser.new_context(**context_kwargs)
+            page = await context.new_page()
 
             # Conservative wait_until to get dynamic content when render_js=True
             wait_until = "networkidle" if render_js else "domcontentloaded"
-            resp = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            resp = await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
             if resp:
                 status = resp.status or 0
                 final_url = page.url
 
             if wait_selector:
                 try:
-                    page.wait_for_selector(wait_selector, timeout=timeout_ms)
+                    await page.wait_for_selector(wait_selector, timeout=timeout_ms)
                 except Exception:
                     pass  # don't fail just because selector not found
 
             try:
-                title = page.title() or ""
+                title = await page.title() or ""
             except Exception:
                 title = ""
 
             # Prefer visible text; fall back to body textContent.
             try:
                 # inner_text("body") respects visibility better than content()
-                text = page.inner_text("body", timeout=2000)
+                text = await page.inner_text("body", timeout=2000)
             except Exception:
                 try:
-                    text = page.evaluate("document.body ? document.body.innerText : ''") or ""
+                    text = await page.evaluate("document.body ? document.body.innerText : ''") or ""
                 except Exception:
                     text = ""
 
@@ -100,6 +100,6 @@ def playwright_web_read(
             }
         finally:
             try:
-                browser.close()
+                await browser.close()
             except Exception:
                 pass

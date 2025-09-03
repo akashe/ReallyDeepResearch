@@ -7,6 +7,7 @@ from tools.serper_tool import serper_search
 from tools.playwright_tool import playwright_web_read
 import os
 import pdb
+import json
 
 load_dotenv(override=True)
 default_model_name = os.environ.get('DEFAULT_MODEL_NAME')
@@ -44,10 +45,10 @@ class SectionResearchManager:
             model=default_model_name
         )
 
-    async def run_section_manager(self, trace_id: str, section_details: Dict) -> Dict:
+    async def run_section_manager(self, trace_id: str, section_details: Dict, trace_name: str) -> Dict:
         section = section_details["section_descriptor"]["section"]
 
-        with trace(f"{section} trace", trace_id=trace_id):
+        with trace(f"{trace_name} trace", trace_id=trace_id):
             # ---------- QueryGen ----------
             query_payload = {
                 "framework": section_details["framework"],
@@ -61,7 +62,11 @@ class SectionResearchManager:
             # query_gen_result = parse_json(query_gen_raw)
             # query_gen_result = ensure_keys(query_gen_result, {"queries": []})
 
-            query_gen_result = json.loads(query_gen_raw.final_output)
+            try:
+                query_gen_result = json.loads(query_gen_raw.final_output)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing query_gen JSON for {section}: {e}")
+                query_gen_result = {"queries": []}
 
             # ---------- Researcher ----------
             researcher_payload = {**query_payload, "queries": query_gen_result.get("queries", [])}
@@ -71,7 +76,11 @@ class SectionResearchManager:
             # researcher_result = parse_json(researcher_raw)
             # researcher_result = ensure_keys(researcher_result, {"facts": [], "domains_seen": [], "gap_flags": []})
 
-            researcher_result = json.loads(researcher_raw.final_output)
+            try:
+                researcher_result = json.loads(researcher_raw.final_output)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing researcher JSON for {section}: {e}")
+                researcher_result = {"facts": [], "domains_seen": [], "gap_flags": []}
             facts_to_url_mapping = {}
             if 'facts' in researcher_result and len(researcher_result['facts'])>0:
                 for fact in researcher_result['facts']:
@@ -104,7 +113,11 @@ class SectionResearchManager:
             #     "assumptions_to_test": []
             # })
 
-            analyst_result = json.loads(analyst_raw.final_output)
+            try:
+                analyst_result = json.loads(analyst_raw.final_output)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing analyst JSON for {section}: {e}")
+                analyst_result = {"section": section, "bullets": [], "mini_takeaways": [], "conflicts": [], "gaps_next": []}
 
             # ---------- Critic (optional) ----------
             critic_result = {}
@@ -118,7 +131,11 @@ class SectionResearchManager:
                 print(f"Running Critic for {section}")
                 critic_raw = await Runner.run(self.critic_agent, as_messages(critic_payload))
 
-                critic_result = json.loads(critic_raw.final_output)
+                try:
+                    critic_result = json.loads(critic_raw.final_output)
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing critic JSON for {section}: {e}")
+                    critic_result = {"bias_flags": [], "coverage_warnings": [], "gap_queries": [], "stop_recommendation": True, "reason": "JSON parse error"}
 
                 # NEW: parse to dict or set to None
                 # critic_parsed = parse_json_or_none(critic_raw)
@@ -165,7 +182,11 @@ class SectionResearchManager:
             #     "confidence": 0.0
             # })
 
-            editor_section = json.loads(editor_raw.final_output)
+            try:
+                editor_section = json.loads(editor_raw.final_output)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing editor JSON for {section}: {e}")
+                editor_section = {"section": section, "highlights": [], "facts_ref": [], "gaps_next": [], "confidence": 0.0}
             if 'facts_ref' in editor_section and len(editor_section['facts_ref'])>0:
                 updated_facts_ref = {}
                 for fact_referred_id in editor_section['facts_ref']:

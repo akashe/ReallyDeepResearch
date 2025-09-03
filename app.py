@@ -8,94 +8,13 @@ import pdb
 
 from agents import gen_trace_id
 from section_agent import SectionResearchManager 
-from summarize_agent import final_report_agent
-from agents import Runner
+from summarize_agent import generate_final_report
+from frameworks.big_idea_framework import big_idea_sections
+from frameworks.specific_idea_framework import specific_idea_sections
 
 load_dotenv(override=True)
 
-# ------------- Framework → Section descriptors (MVP set; extend later) -------------
-
-def big_idea_sections() -> Dict[str, Dict]:
-    return {
-        "landscape": {
-            "section": "landscape",
-            "description": "Identify key companies, startups, incumbents, labs, and OSS projects; note product focus and funding stage where public.",
-            "facets": ["companies", "founding_dates", "funding", "product_focus", "geographies"],
-            "example_queries": [
-                "\"<TOPIC>\" companies landscape 2025",
-                "\"<TOPIC>\" ecosystem map filetype:ppt",
-                "\"<TOPIC>\" startups funding OR acquisitions"
-            ],
-        },
-        "product_categories": {
-            "section": "product_categories",
-            "description": "Classify product categories and workflows; what problems each category solves and for whom.",
-            "facets": ["use_cases", "workflows", "customer_segments", "problem_solved"],
-            "example_queries": [
-                "\"<TOPIC>\" categories generation editing distribution",
-                "\"<TOPIC>\" workflow automation case study"
-            ],
-        },
-        "tech_stack": {
-            "section": "tech_stack",
-            "description": "Common models, datasets, frameworks, infra; latency, training methods, and benchmarks.",
-            "facets": ["model_types", "architectures", "datasets", "benchmarks", "infra", "latency"],
-            "example_queries": [
-                "\"<TOPIC>\" transformer diffusion benchmark",
-                "site:arxiv.org <TOPIC> dataset",
-                "\"<TOPIC>\" real-time latency"
-            ],
-        },
-        "market_signals": {
-            "section": "market_signals",
-            "description": "Funding rounds, partnerships, M&A, pricing models, and active business models.",
-            "facets": ["funding", "partnerships", "acquisitions", "pricing", "business_models"],
-            "example_queries": [
-                "\"<TOPIC>\" Series A OR funding OR raise 2025",
-                "\"<TOPIC>\" pricing subscription licensing"
-            ],
-        },
-    }
-
-def specific_idea_sections() -> Dict[str, Dict]:
-    return {
-        "problem_pain": {
-            "section": "problem_pain",
-            "description": "Evidence the problem is painful, urgent, repeated; quantify impact where possible.",
-            "facets": ["frequency", "severity", "customer_types", "evidence"],
-            "example_queries": [
-                "\"<TOPIC>\" delays costs enterprise",
-                "\"<TOPIC>\" SLA breach case study"
-            ],
-        },
-        "buyer_budget_owner": {
-            "section": "buyer_budget_owner",
-            "description": "Who buys/approves; budget lines; influencers to the decision.",
-            "facets": ["buyers", "budget_lines", "decision_influencers"],
-            "example_queries": [
-                "\"<TOPIC>\" budget owner CIO",
-                "\"<TOPIC>\" procurement process"
-            ],
-        },
-        "defensibility": {
-            "section": "defensibility",
-            "description": "Moats: data, integrations, workflow lock-in; contrast incumbents.",
-            "facets": ["moats", "switching_costs", "integration_barriers", "data_lock_in"],
-            "example_queries": [
-                "\"<TOPIC>\" competitor analysis",
-                "\"<TOPIC>\" defensibility"
-            ],
-        },
-        "gtm_channels": {
-            "section": "gtm_channels",
-            "description": "Feasible GTM motions: PLG, integrations, partners, direct enterprise sales; rank feasibility.",
-            "facets": ["plg", "integrations", "direct_sales", "partners"],
-            "example_queries": [
-                "\"<TOPIC>\" GTM strategy",
-                "\"<TOPIC>\" marketplace integration"
-            ],
-        },
-    }
+# ------------- Framework → Section descriptors (loaded from framework files) -------------
 
 # ------------- Shared run params -------------
 
@@ -137,6 +56,7 @@ async def run_framework_parallel_stream(framework: str, topic: str):
 
     section_defs = big_idea_sections() if framework == "big-idea" else specific_idea_sections()
     trace_id = gen_trace_id()
+    trace_name = f"{framework} {topic}"
 
     # Kick off all sections in parallel
     tasks = []
@@ -147,7 +67,7 @@ async def run_framework_parallel_stream(framework: str, topic: str):
         mgrs[sec_name] = mgr
         # emit start message
         yield (f"▶️ Starting section **{sec_name}** …", None)
-        tasks.append(asyncio.create_task(mgr.run_section_manager(trace_id, details)))
+        tasks.append(asyncio.create_task(mgr.run_section_manager(trace_id, details, trace_name)))
 
 
     # Collect as tasks finish
@@ -166,65 +86,25 @@ async def run_framework_parallel_stream(framework: str, topic: str):
             print("Something went wrong")
             yield (f"⚠️ A section failed: {e}", None)
 
-    # Build a compact merged summary for display (you can also pass to a FinalMerge editor later)
-    merged = {
-        "framework": framework,
-        "topic_or_idea": topic,
-        "sections": {
-            s: {
-                "highlights": section_results[s]["section_brief"].get("highlights", []),
-                "confidence": section_results[s]["section_brief"].get("confidence", 0.0),
-                "facts_ref": section_results[s]["section_brief"].get("facts_ref", []),
-                "gaps_next": section_results[s]["section_brief"].get("gaps_next", []),
-            }
-            for s in section_results
-        }
-    }
-
-    pretty = json.dumps(merged, indent=4, ensure_ascii=False)
-    # yield ("🧩 All sections complete. Merged summary JSON is ready (below).", pretty)
-
-    # Generating final summary
-
-    section_analyses = [
-        res["artifacts"]["analysis"] for res in section_results.values()
-    ]
-    facts_to_url_mapping = {
-        s: res["artifacts"].get("facts_to_url_mapping", {})
-        for s,res in section_results.items()
-    }
-
-    payload = {
-        "framework": framework,
-        "topic_or_idea": topic,
-        "section_analyses": section_analyses,
-        "facts_to_url_mapping": facts_to_url_mapping
-    }
-
-    final_report = await Runner.run(final_report_agent, [
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
-    ])
-
-    combined = f"""## 🧩 Structured Summary (JSON)
-    ```json
-    {pretty}
-
-    📄 Narrative Report
-
-    {final_report.final_output}
-    """
-
-    yield ("📄 Report", combined)
+    # Generate comprehensive final report using summarize_agent
+    yield ("🔄 Generating final report with fact verification...", None)
+    
+    report_data = await generate_final_report(framework, topic, section_results, trace_id, trace_name)
+    
+    # Format the final output - this will be handled by the improved UI
+    yield ("📄 Report Complete", report_data)
 
 
 # ------------- Gradio UI -------------
 
 CSS = """
-#chat {height: 520px}
+#chat {height: 400px}
+.json-display {font-family: 'Monaco', 'Consolas', monospace; font-size: 12px;}
+.metadata-display {background: #f8f9fa; padding: 10px; border-radius: 5px;}
 """
 
 with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
-    gr.Markdown("## 🔎 DeepResearch MVP\nEnter a topic and choose a framework. Sections run **in parallel**; progress appears below.")
+    gr.Markdown("## 🔎 DeepResearch MVP\nEnter a topic and choose a framework. Sections run **in parallel**; results organized below.")
 
     with gr.Row():
         topic_in = gr.Textbox(
@@ -234,49 +114,98 @@ with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
         )
 
     with gr.Row():
-        btn_big = gr.Button("Run Big-Idea Exploration", variant="primary")
-        btn_specific = gr.Button("Run Specific-Idea Exploration")
+        btn_big = gr.Button("🌐 Run Big-Idea Exploration", variant="primary")
+        btn_specific = gr.Button("🎯 Run Specific-Idea Exploration")
 
-    chat = gr.Chatbot(label="Run Log", height=520, elem_id="chat")
-    out_json = gr.Markdown(label="Merged Summary ")
+    # Progress chat at the top
+    chat = gr.Chatbot(label="🔄 Research Progress", height=400, elem_id="chat")
+    
+    # Organized results in tabs
+    with gr.Tabs():
+        with gr.TabItem("📄 Executive Report"):
+            narrative_display = gr.Markdown(
+                label="Executive Summary",
+                value="Research results will appear here...",
+                elem_classes=["narrative-display"]
+            )
+            metadata_display = gr.Markdown(
+                label="Research Statistics", 
+                value="",
+                elem_classes=["metadata-display"]
+            )
+            
+        with gr.TabItem("📊 Structured Data"):
+            json_display = gr.Code(
+                label="Section Analysis (JSON)",
+                language="json",
+                value="{}",
+                elem_classes=["json-display"]
+            )
+            
+        with gr.TabItem("💾 Export"):
+            download_data = gr.JSON(label="Full Research Data", visible=False)
+            gr.Markdown("**Export Options:**")
+            with gr.Row():
+                export_json_btn = gr.DownloadButton("📥 Download JSON", visible=True)
+                export_md_btn = gr.DownloadButton("📝 Download Markdown", visible=True)
 
-    # state keeps the conversation messages
+    # Hidden state for messages and data
     state_msgs = gr.State([])  # List[Tuple[str,str]]
 
     async def _start_run(framework: str, topic: str, msgs: List[Tuple[str, str]]):
         if not topic or not topic.strip():
             msgs = msgs + [("user", f"{framework}"), ("assistant", "❌ Please enter a topic/idea first.")]
-            # one yield and then exit
-            yield msgs, gr.update(value=""), msgs
+            # Clear all outputs and return
+            yield msgs, "", "", "", {}, msgs
             return
 
-        # Add user's “start” message
+        # Add user's "start" message
         msgs = msgs + [("user", f"{framework}: {topic}")]
-        collected_json = None
+        
+        # Clear previous outputs
+        current_json = ""
+        current_narrative = ""
+        current_metadata = ""
 
         # Stream updates as they arrive
-        async for text, maybe_json in run_framework_parallel_stream(framework, topic.strip()):
+        async for text, report_data in run_framework_parallel_stream(framework, topic.strip()):
             msgs = msgs + [("assistant", text)]
-            if maybe_json is not None:
-                collected_json = maybe_json
-            yield msgs, gr.update(value=collected_json or ""), msgs
+            
+            if report_data is not None:
+                # Extract different parts of the report
+                if isinstance(report_data, dict):
+                    # Format structured summary as JSON
+                    structured_summary = report_data.get("structured_summary", {})
+                    current_json = json.dumps(structured_summary, indent=2, ensure_ascii=False)
+                    
+                    # Extract narrative report
+                    current_narrative = report_data.get("narrative_report", "")
+                    
+                    # Format metadata
+                    metadata = report_data.get("metadata", {})
+                    current_metadata = f"""**Research Metadata:**
+- Total Facts: {metadata.get('total_facts', 0)}
+- Average Confidence: {metadata.get('avg_confidence', 0):.2f}
+- Sections Analyzed: {metadata.get('sections_count', 0)}"""
+            
+            yield msgs, current_json, current_narrative, current_metadata, report_data or {}, msgs
 
-        # Final yield to flush last state (no return-with-value!)
-        yield msgs, gr.update(value=collected_json or ""), msgs
+        # Final yield to ensure last state is displayed
+        yield msgs, current_json, current_narrative, current_metadata, report_data or {}, msgs
 
 
     # Button handlers (streaming)
     btn_big.click(
         _start_run,
         inputs=[gr.State("big-idea"), topic_in, state_msgs],
-        outputs=[chat, out_json, state_msgs],
+        outputs=[chat, json_display, narrative_display, metadata_display, download_data, state_msgs],
         queue=True
     )
 
     btn_specific.click(
         _start_run,
         inputs=[gr.State("specific-idea"), topic_in, state_msgs],
-        outputs=[chat, out_json, state_msgs],
+        outputs=[chat, json_display, narrative_display, metadata_display, download_data, state_msgs],
         queue=True
     )
 
