@@ -25,7 +25,7 @@ async def playwright_web_read(
     url: str,
     wait_selector: Optional[str] = None,
     render_js: bool = True,
-    timeout_ms: int = 15000,
+    timeout_ms: int = 120000,
     max_chars: int = 200_000,
     user_agent: Optional[str] = None,
 ) -> Dict[str, object]:

@@ -17,6 +17,11 @@ class SectionResearchManager:
         self.section_name = section_name
         self.enable_critic = enable_critic
 
+        self.complexity_agent = Agent(
+            name=f"Complexity Agent: {section_name}",
+            instructions=complexity_agent_system_prompt,
+            model=default_model_name
+        )
         self.query_gen_agent = Agent(
             name=f"Query Gen Agent: {section_name}",
             instructions=query_gen_agent_system_prompt,
@@ -45,32 +50,77 @@ class SectionResearchManager:
             model=default_model_name
         )
 
-    async def run_section_manager(self, trace_id: str, section_details: Dict, trace_name: str) -> Dict:
+    async def run_section_manager(self, trace_id: str, section_details: Dict, trace_name: str, progress_callback=None) -> Dict:
         section = section_details["section_descriptor"]["section"]
 
         with trace(f"{trace_name} trace", trace_id=trace_id):
-            # ---------- QueryGen ----------
-            query_payload = {
+            base_payload = {
                 "framework": section_details["framework"],
                 "topic_or_idea": section_details["topic_or_idea"],
                 "section_descriptor": section_details["section_descriptor"],
                 "run_params": section_details.get("run_params", {})
             }
-            print(f"Running QueryGen for {section}")
-            query_gen_raw = await Runner.run(self.query_gen_agent, as_messages(query_payload))
-            # pdb.set_trace()
-            # query_gen_result = parse_json(query_gen_raw)
-            # query_gen_result = ensure_keys(query_gen_result, {"queries": []})
+            
+            # ---------- Step 1: Complexity Assessment ----------
+            if progress_callback:
+                await progress_callback(f"🧠 Analyzing complexity for **{section}**...")
+            print(f"[{section}] Running Complexity Assessment")
+            complexity_raw = await Runner.run(self.complexity_agent, as_messages(base_payload))
+            
+            try:
+                complexity_result = json.loads(complexity_raw.final_output)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing complexity JSON for {section}: {e}")
+                complexity_result = {
+                    "complexity": "moderate", 
+                    "reasoning": "fallback due to parsing error",
+                    "recommended_query_count": 12,
+                    "search_strategy_notes": "standard approach"
+                }
+            
+            complexity_level = complexity_result.get("complexity", "moderate")
+            recommended_count = complexity_result.get("recommended_query_count", 12)
+            strategy_notes = complexity_result.get("search_strategy_notes", "")
+            
+            print(f"[{section}] Complexity: {complexity_level}, Recommended queries: {recommended_count}")
+            if progress_callback:
+                await progress_callback(f"📊 **{section}** complexity: {complexity_level} → generating {recommended_count} queries")
 
+            # ---------- Step 2: Query Generation ----------
+            query_payload = {
+                **base_payload,
+                "complexity_level": complexity_level,
+                "recommended_query_count": recommended_count,
+                "search_strategy_notes": strategy_notes
+            }
+            
+            if progress_callback:
+                await progress_callback(f"🔍 Generating search queries for **{section}**...")
+            print(f"[{section}] Running Query Generation")
+            query_gen_raw = await Runner.run(self.query_gen_agent, as_messages(query_payload))
+            
             try:
                 query_gen_result = json.loads(query_gen_raw.final_output)
             except json.JSONDecodeError as e:
                 print(f"Error parsing query_gen JSON for {section}: {e}")
                 query_gen_result = {"queries": []}
 
-            # ---------- Researcher ----------
-            researcher_payload = {**query_payload, "queries": query_gen_result.get("queries", [])}
-            print(f"Running Researcher for {section}")
+            actual_queries = len(query_gen_result.get("queries", []))
+            print(f"[{section}] Generated {actual_queries} queries (target: {recommended_count})")
+            if progress_callback:
+                await progress_callback(f"🌐 Researching **{section}** with {actual_queries} search queries...")
+
+            # Update run_params with dynamic query count for researcher
+            dynamic_run_params = base_payload["run_params"].copy()
+            dynamic_run_params["max_queries"] = recommended_count
+
+            # ---------- Step 3: Research ----------
+            researcher_payload = {
+                **base_payload, 
+                "queries": query_gen_result.get("queries", []),
+                "run_params": dynamic_run_params
+            }
+            print(f"[{section}] Running Researcher")
             researcher_raw = await Runner.run(self.researcher_agent, as_messages(researcher_payload))
             # pdb.set_trace()
             # researcher_result = parse_json(researcher_raw)
@@ -92,101 +142,167 @@ class SectionResearchManager:
                     facts_to_url_mapping[fact_id].append(source_url)
 
 
-            # ---------- Analyst ----------
+            # ---------- Step 4: Analysis ----------
+            facts_count = len(researcher_result.get("facts", []))
+            if progress_callback:
+                await progress_callback(f"🧪 Analyzing {facts_count} facts for **{section}**...")
+                
             analyst_payload = {
-                **query_payload,
+                **base_payload,
                 "facts": researcher_result.get("facts", []),
                 "domains_seen": researcher_result.get("domains_seen", []),
                 "gap_flags": researcher_result.get("gap_flags", [])
             }
-            print(f"Running Analyst for {section}")
+            print(f"[{section}] Running Analyst")
             analyst_raw = await Runner.run(self.analyst_agent, as_messages(analyst_payload))
-            # pdb.set_trace()
-            # analyst_result = parse_json(analyst_raw)
-            # analyst_result = ensure_keys(analyst_result, {
-            #     "section": section,
-            #     "bullets": [],
-            #     "mini_takeaways": [],
-            #     "conflicts": [],
-            #     "gaps_next": [],
-            #     "ranked_options": [],
-            #     "assumptions_to_test": []
-            # })
-
+            
             try:
                 analyst_result = json.loads(analyst_raw.final_output)
             except json.JSONDecodeError as e:
                 print(f"Error parsing analyst JSON for {section}: {e}")
                 analyst_result = {"section": section, "bullets": [], "mini_takeaways": [], "conflicts": [], "gaps_next": []}
 
-            # ---------- Critic (optional) ----------
+            # ---------- Step 5: Quality Assessment (Critic) ----------
             critic_result = {}
             if self.enable_critic:
+                if progress_callback:
+                    await progress_callback(f"🔬 Assessing research quality for **{section}**...")
+                    
                 critic_payload = {
-                    **query_payload,
-                    "analyst_json": analyst_result,
-                    "domains_seen": researcher_result.get("domains_seen", []),
-                    "gap_flags": researcher_result.get("gap_flags", [])
+                    **base_payload,
+                    "facts": researcher_result.get("facts", []),
+                    "analyst_json": analyst_result
                 }
-                print(f"Running Critic for {section}")
+                print(f"[{section}] Running Quality Assessment (Critic)")
                 critic_raw = await Runner.run(self.critic_agent, as_messages(critic_payload))
 
                 try:
                     critic_result = json.loads(critic_raw.final_output)
                 except json.JSONDecodeError as e:
                     print(f"Error parsing critic JSON for {section}: {e}")
-                    critic_result = {"bias_flags": [], "coverage_warnings": [], "gap_queries": [], "stop_recommendation": True, "reason": "JSON parse error"}
+                    critic_result = {
+                        "needs_iteration": False,
+                        "iteration_reason": "JSON parse error",
+                        "quality_issues": [],
+                        "gap_queries": [],
+                        "confidence_assessment": 0.5
+                    }
 
-                # NEW: parse to dict or set to None
-                # critic_parsed = parse_json_or_none(critic_raw)
+            # Extract iteration decision from Critic
+            needs_iteration = critic_result.get("needs_iteration", False)
+            iteration_reason = critic_result.get("iteration_reason", "")
+            critic_confidence = critic_result.get("confidence_assessment", 0.5)
+            gap_queries_raw = critic_result.get("gap_queries", [])
+            
+            print(f"[{section}] Critic assessment - Needs iteration: {needs_iteration}, Confidence: {critic_confidence:.2f}")
 
-                # if critic_parsed is None:
-                #     # Log a short snippet so you can see what came back
-                #     txt = to_text(critic_raw)
-                #     print(f"[critic][{section}] non-JSON output (first 300 chars):\n{txt[:300]}")
-                #     # Fallback to empty audit (MVP)
-                #     critic_result = {
-                #         "bias_flags": [],
-                #         "coverage_warnings": [],
-                #         "gap_queries": [],
-                #         "stop_recommendation": True,
-                #         "reason": "critic returned non-JSON"
-                #     }
-                # else:
-                #     critic_result = ensure_keys(critic_parsed, {
-                #         "bias_flags": [],
-                #         "coverage_warnings": [],
-                #         "gap_queries": [],
-                #         "stop_recommendation": True,
-                #         "reason": "n/a"
-                #     })
+            # ---------- Step 6: Self-Healing Research Loop (if needed) ----------
+            if self.enable_critic and needs_iteration and len(gap_queries_raw) > 0:
+                if progress_callback:
+                    await progress_callback(f"🔄 **{section}** needs iteration → running {len(gap_queries_raw[:5])} gap queries...")
+                print(f"[{section}] Triggering self-healing loop: {iteration_reason}")
+                
+                # Use Critic's gap queries (already formatted)
+                iteration_queries = gap_queries_raw[:5]  # Max 5 gap queries
+                
+                # Second research round
+                iteration_payload = {
+                    **base_payload,
+                    "queries": iteration_queries,
+                    "run_params": {**dynamic_run_params, "max_queries": len(iteration_queries)}
+                }
+                
+                print(f"[{section}] Running iteration research with {len(iteration_queries)} gap queries")
+                iteration_researcher_raw = await Runner.run(self.researcher_agent, as_messages(iteration_payload))
+                
+                try:
+                    iteration_researcher_result = json.loads(iteration_researcher_raw.final_output)
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing iteration researcher JSON for {section}: {e}")
+                    iteration_researcher_result = {"facts": [], "domains_seen": [], "gap_flags": []}
+                
+                # Merge original and iteration facts (handle duplicates)
+                all_facts = researcher_result.get("facts", [])
+                iteration_facts = iteration_researcher_result.get("facts", [])
+                
+                # Simple deduplication by claim+entity+source
+                seen_fact_keys = set()
+                for fact in all_facts:
+                    fact_key = f"{fact.get('entity', '')}-{fact.get('claim', '')}-{fact.get('source_url', '')}"
+                    seen_fact_keys.add(fact_key)
+                
+                new_facts = []
+                for fact in iteration_facts:
+                    fact_key = f"{fact.get('entity', '')}-{fact.get('claim', '')}-{fact.get('source_url', '')}"
+                    if fact_key not in seen_fact_keys:
+                        new_facts.append(fact)
+                        seen_fact_keys.add(fact_key)
+                
+                merged_facts = all_facts + new_facts
+                merged_researcher_result = {
+                    **researcher_result,
+                    "facts": merged_facts,
+                    "domains_seen": list(set(researcher_result.get("domains_seen", []) + iteration_researcher_result.get("domains_seen", [])))
+                }
+                
+                print(f"[{section}] Merged {len(new_facts)} new facts, total: {len(merged_facts)}")
+                if progress_callback:
+                    await progress_callback(f"🔬 Re-analyzing **{section}** with {len(merged_facts)} total facts (added {len(new_facts)} new)...")
+                
+                # Re-run analyst with ALL facts (original + iteration facts)
+                iteration_analyst_payload = {
+                    **base_payload,  # Use base_payload for consistency
+                    "facts": merged_facts,  # This contains ALL facts: original + new from iteration
+                    "domains_seen": merged_researcher_result.get("domains_seen", []),
+                    "gap_flags": merged_researcher_result.get("gap_flags", [])
+                }
+                
+                print(f"[{section}] Re-running Analyst with expanded facts (total: {len(merged_facts)} facts)")
+                iteration_analyst_raw = await Runner.run(self.analyst_agent, as_messages(iteration_analyst_payload))
+                
+                try:
+                    iteration_analyst_result = json.loads(iteration_analyst_raw.final_output)
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing iteration analyst JSON for {section}: {e}")
+                    iteration_analyst_result = analyst_result  # fallback to original
+                
+                # Update the final facts and analysis for editor
+                print(f"[{section}] Iteration complete - updated facts and analysis ready for Editor")
+                researcher_result = merged_researcher_result
+                analyst_result = iteration_analyst_result
+                
+                # Update facts_to_url_mapping with new facts
+                for fact in new_facts:
+                    fact_id = fact["fact_id"]
+                    source_url = fact["source_url"]
+                    if fact_id not in facts_to_url_mapping:
+                        facts_to_url_mapping[fact_id] = []
+                    facts_to_url_mapping[fact_id].append(source_url)
 
-            # ---------- Editor (section pass) ----------
-            editor_section_payload = {
-                **query_payload,
-                "analyst_json": analyst_result,
-                "facts": researcher_result.get("facts", []),
-                "domains_seen": researcher_result.get("domains_seen", []),
-                "gap_flags": researcher_result.get("gap_flags", []),
-                # "critic_json": critic_result
+            # ---------- Step 7: Editor (Always Runs Once at the End) ----------
+            if progress_callback:
+                iteration_status = "with iteration enhancements" if (self.enable_critic and needs_iteration and len(gap_queries_raw) > 0) else "with original analysis"
+                await progress_callback(f"✏️ Finalizing **{section}** section brief ({iteration_status})...")
+            
+            editor_payload = {
+                **base_payload,
+                "analyst_json": analyst_result,  # This is either original or iteration-enhanced
+                "facts": researcher_result.get("facts", []),  # This is either original or merged facts
+                "critic_json": critic_result  # Pass critic assessment to editor
             }
-            print(f"Running Editor (section) for {section}")
-            editor_raw = await Runner.run(self.editor_agent, as_messages(editor_section_payload))
-            # pdb.set_trace()
-            # editor_section = parse_json(editor_raw)
-            # editor_section = ensure_keys(editor_section, {
-            #     "section": section,
-            #     "highlights": [],
-            #     "facts_ref": [],
-            #     "gaps_next": [],
-            #     "confidence": 0.0
-            # })
-
+            
+            iteration_status = "after iteration" if (self.enable_critic and needs_iteration and len(gap_queries_raw) > 0) else "no iteration"
+            print(f"[{section}] Running Editor ({iteration_status})")
+            
+            editor_raw = await Runner.run(self.editor_agent, as_messages(editor_payload))
+            
             try:
                 editor_section = json.loads(editor_raw.final_output)
             except json.JSONDecodeError as e:
                 print(f"Error parsing editor JSON for {section}: {e}")
-                editor_section = {"section": section, "highlights": [], "facts_ref": [], "gaps_next": [], "confidence": 0.0}
+                editor_section = {"section": section, "highlights": [], "facts_ref": [], "gaps_next": [], "confidence": critic_confidence}
+
+            # Update facts_ref mapping
             if 'facts_ref' in editor_section and len(editor_section['facts_ref'])>0:
                 updated_facts_ref = {}
                 for fact_referred_id in editor_section['facts_ref']:
@@ -195,21 +311,16 @@ class SectionResearchManager:
 
                 editor_section['facts_ref'] = deepcopy(updated_facts_ref)
 
-
-            # Merge critic gap queries into gaps_next (strings only)
-            # if critic_result and critic_result.get("gap_queries"):
-            #     extra = [gq.get("q") for gq in critic_result["gap_queries"] if isinstance(gq, dict) and gq.get("q")]
-            #     if extra:
-            #         editor_section["gaps_next"] = list({*editor_section.get("gaps_next", []), *extra})
-
             return {
                 "section": section,
                 "section_brief": editor_section,
                 "artifacts": {
+                    "complexity": complexity_result,
                     "queries": query_gen_result,
                     "facts": researcher_result,
                     "analysis": analyst_result,
                     "critic": critic_result,
-                    "facts_to_url_mapping": facts_to_url_mapping
+                    "facts_to_url_mapping": facts_to_url_mapping,
+                    "iteration_triggered": self.enable_critic and needs_iteration and len(gap_queries_raw) > 0
                 }
             }

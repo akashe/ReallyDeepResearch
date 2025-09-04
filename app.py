@@ -58,6 +58,13 @@ async def run_framework_parallel_stream(framework: str, topic: str):
     trace_id = gen_trace_id()
     trace_name = f"{framework} {topic}"
 
+    # Use asyncio.Queue to collect progress messages from all sections
+    progress_queue = asyncio.Queue()
+    
+    # Create a progress callback that adds messages to the queue
+    async def progress_callback(message: str):
+        await progress_queue.put(message)
+
     # Kick off all sections in parallel
     tasks = []
     mgrs = {}
@@ -67,24 +74,41 @@ async def run_framework_parallel_stream(framework: str, topic: str):
         mgrs[sec_name] = mgr
         # emit start message
         yield (f"▶️ Starting section **{sec_name}** …", None)
-        tasks.append(asyncio.create_task(mgr.run_section_manager(trace_id, details, trace_name)))
+        tasks.append(asyncio.create_task(mgr.run_section_manager(trace_id, details, trace_name, progress_callback)))
 
-
-    # Collect as tasks finish
+    # Monitor both task completion and progress messages
+    active_tasks = set(tasks)
     section_results = {}
-    for coro in asyncio.as_completed(tasks):
+    
+    while active_tasks or not progress_queue.empty():
+        # Check for completed tasks
+        done_tasks = {task for task in active_tasks if task.done()}
+        for task in done_tasks:
+            active_tasks.remove(task)
+            try:
+                res = await task
+                sec = res["section"]
+                brief = res["section_brief"]
+                section_results[sec] = res
+                # stream per-section done
+                conf = brief.get("confidence", 0.0)
+                hl_count = len(brief.get("highlights", []))
+                yield (f"✅ Finished **{sec}** — highlights: {hl_count}, confidence: {conf:.2f}", None)
+            except Exception as e:
+                print("Something went wrong")
+                yield (f"⚠️ A section failed: {e}", None)
+        
+        # Check for progress messages
         try:
-            res = await coro
-            sec = res["section"]
-            brief = res["section_brief"]
-            section_results[sec] = res
-            # stream per-section done
-            conf = brief.get("confidence", 0.0)
-            hl_count = len(brief.get("highlights", []))
-            yield (f"✅ Finished **{sec}** — highlights: {hl_count}, confidence: {conf:.2f}", None)
-        except Exception as e:
-            print("Something went wrong")
-            yield (f"⚠️ A section failed: {e}", None)
+            while True:
+                message = progress_queue.get_nowait()
+                yield (message, None)
+        except asyncio.QueueEmpty:
+            pass
+        
+        # Brief sleep to prevent busy waiting
+        if active_tasks:
+            await asyncio.sleep(0.1)
 
     # Generate comprehensive final report using summarize_agent
     yield ("🔄 Generating final report with fact verification...", None)
@@ -104,7 +128,7 @@ CSS = """
 """
 
 with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
-    gr.Markdown("## 🔎 DeepResearch MVP\nEnter a topic and choose a framework. Sections run **in parallel**; results organized below.")
+    gr.Markdown("## 🔎 DeepResearch MVP\nEnter a topic and choose a framework.")
 
     with gr.Row():
         topic_in = gr.Textbox(
@@ -148,6 +172,10 @@ with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
             with gr.Row():
                 export_json_btn = gr.DownloadButton("📥 Download JSON", visible=True)
                 export_md_btn = gr.DownloadButton("📝 Download Markdown", visible=True)
+            
+            # Hidden file outputs for downloads
+            json_file = gr.File(visible=False)
+            md_file = gr.File(visible=False)
 
     # Hidden state for messages and data
     state_msgs = gr.State([])  # List[Tuple[str,str]]
@@ -193,6 +221,37 @@ with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
         # Final yield to ensure last state is displayed
         yield msgs, current_json, current_narrative, current_metadata, report_data or {}, msgs
 
+    # Download functions
+    def download_json(report_data):
+        if not report_data:
+            return None
+        
+        import tempfile
+        import os
+        
+        # Create temporary file for JSON download
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(report_data, f, indent=2, ensure_ascii=False)
+            temp_path = f.name
+        
+        return temp_path
+
+    def download_markdown(report_data):
+        if not report_data:
+            return None
+            
+        import tempfile
+        import os
+        
+        # Get the narrative report
+        narrative = report_data.get("narrative_report", "# No report available")
+        
+        # Create temporary file for Markdown download
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            f.write(narrative)
+            temp_path = f.name
+        
+        return temp_path
 
     # Button handlers (streaming)
     btn_big.click(
@@ -207,6 +266,19 @@ with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
         inputs=[gr.State("specific-idea"), topic_in, state_msgs],
         outputs=[chat, json_display, narrative_display, metadata_display, download_data, state_msgs],
         queue=True
+    )
+
+    # Download button handlers
+    export_json_btn.click(
+        fn=download_json,
+        inputs=[download_data],
+        outputs=[json_file]
+    )
+
+    export_md_btn.click(
+        fn=download_markdown,
+        inputs=[download_data], 
+        outputs=[md_file]
     )
 
 if __name__ == "__main__":
