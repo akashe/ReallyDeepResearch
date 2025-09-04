@@ -128,7 +128,7 @@ CSS = """
 """
 
 with gr.Blocks(css=CSS, fill_height=True, theme=gr.themes.Soft()) as demo:
-    gr.Markdown("## 🔎 DeepResearch MVP\nEnter a topic and choose a framework.")
+    gr.Markdown("## 🔎 ReallyDeepResearch\nEnter a topic and choose a framework.")
 
     with gr.Row():
         topic_in = gr.Textbox(
